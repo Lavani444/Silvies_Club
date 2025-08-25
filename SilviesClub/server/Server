@@ -1,0 +1,103 @@
+// server/server.js
+const express = require("express");
+const cors = require("cors");
+const sqlite3 = require("sqlite3").verbose();
+
+const app = express();
+const db = new sqlite3.Database("data/silviesclub.db");
+
+app.use(cors());
+app.use(express.json());
+
+// ✅ Get all learners
+app.get("/learners", (req, res) => {
+  db.all(
+    `SELECT learners.id, learners.name, learners.points,
+            classes.name AS class, grades.name AS grade, teachers.name AS teacher
+     FROM learners
+     LEFT JOIN classes ON learners.class_id = classes.id
+     LEFT JOIN grades ON learners.grade = grades.id
+     LEFT JOIN teachers ON learners.teacher_id = teachers.id`,
+    (err, rows) => {
+      if (err) return res.status(500).json(err);
+      res.json(rows);
+    }
+  );
+});
+
+// ✅ Get all teachers
+app.get("/teachers", (req, res) => {
+  db.all("SELECT * FROM teachers ORDER BY name", (err, rows) => {
+    if (err) return res.status(500).json(err);
+    res.json(rows);
+  });
+});
+
+// ✅ Assign merit (creates assignment + updates learner points)
+app.post("/assign-merit", (req, res) => {
+  const { learner_id, merit_type_id, term, awarded_by } = req.body;
+  if (!learner_id || !merit_type_id || !term || !awarded_by) {
+    return res.status(400).json({ error: "Missing required fields" });
+  }
+
+  db.get("SELECT points FROM merit_types WHERE id = ?", [merit_type_id], (err, meritType) => {
+    if (err) return res.status(500).json(err);
+    if (!meritType) return res.status(404).json({ error: "Merit type not found" });
+
+    const points = meritType.points;
+    const date_awarded = new Date().toISOString().split("T")[0];
+
+    db.serialize(() => {
+      db.run("BEGIN TRANSACTION");
+
+      db.run(
+        `INSERT INTO assignments (learner_id, merit_type_id, term, date_awarded, awarded_by, points)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [learner_id, merit_type_id, term, date_awarded, awarded_by, points],
+        function (err) {
+          if (err) {
+            db.run("ROLLBACK");
+            return res.status(500).json(err);
+          }
+
+          db.run(
+            "UPDATE learners SET points = points + ? WHERE id = ?",
+            [points, learner_id],
+            (err) => {
+              if (err) {
+                db.run("ROLLBACK");
+                return res.status(500).json(err);
+              }
+
+              db.run("COMMIT");
+              res.json({ success: true, assignmentId: this.lastID });
+            }
+          );
+        }
+      );
+    });
+  });
+});
+
+// ✅ Leaderboard
+app.get("/leaderboard", (req, res) => {
+  db.all(
+    `SELECT learners.id, learners.name, grades.name AS grade, classes.name AS class,
+            learners.points
+     FROM learners
+     LEFT JOIN grades ON learners.grade = grades.id
+     LEFT JOIN classes ON learners.class_id = classes.id
+     ORDER BY learners.points DESC
+     LIMIT 20`,
+    (err, rows) => {
+      if (err) return res.status(500).json(err);
+      res.json(rows);
+    }
+  );
+});
+
+const PORT = process.env.PORT || 3000;
+
+app.listen(PORT, () => {
+  console.log(`✅ Server running on http://localhost:${PORT}`);
+});
